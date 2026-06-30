@@ -94,3 +94,13 @@ Run prediction on an audio file (includes printing a timeline of where the model
 ```bash
 python predict_crnn.py --file "path/to/your/audio.wav"
 ```
+
+---
+
+## Real-time Microphone Client
+
+You can run the interactive real-time prediction script to record 3 seconds of your voice from your microphone and get immediate feedback:
+```bash
+python predict_realtime.py
+```
+*(Make sure to use the full Python path on your device: `C:\Users\Intel\AppData\Local\Programs\Python\Python313\python.exe predict_realtime.py`)*
