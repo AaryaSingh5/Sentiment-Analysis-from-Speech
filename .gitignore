@@ -1,0 +1,17 @@
+# Datasets
+archive (1)/
+archive (2)/
+
+# Extracted features and cache
+extracted_features.csv
+__pycache__/
+.pytest_cache/
+
+# Saved models and scalers
+*.joblib
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
