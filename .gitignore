@@ -4,11 +4,13 @@ archive (2)/
 
 # Extracted features and cache
 extracted_features.csv
+*.npz
 __pycache__/
 .pytest_cache/
 
 # Saved models and scalers
 *.joblib
+*.pth
 
 # Virtual environments
 venv/

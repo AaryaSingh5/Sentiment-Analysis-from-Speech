@@ -4,3 +4,6 @@ librosa
 soundfile
 scikit-learn
 joblib
+tqdm
+torch
+torchaudio
