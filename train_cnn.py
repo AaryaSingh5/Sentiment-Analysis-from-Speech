@@ -1,4 +1,5 @@
 import os
+import random
 import numpy as np
 import joblib
 import torch
@@ -16,68 +17,113 @@ NORMALIZATION_PATH = "normalization_params.joblib"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-# Define Dataset
+# Define Dataset with SpecAugment data augmentation
 class SpectrogramDataset(Dataset):
-    def __init__(self, X, y):
+    def __init__(self, X, y, augment=False):
         # Add channel dimension: (N, 1, 128, 128)
         self.X = torch.tensor(X, dtype=torch.float32).unsqueeze(1)
         self.y = torch.tensor(y, dtype=torch.long)
+        self.augment = augment
 
     def __len__(self):
         return len(self.y)
 
     def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+        x = self.X[idx]
+        y = self.y[idx]
+        if self.augment:
+            x = self._spec_augment(x)
+        return x, y
 
-# Define 2D CNN Architecture
+    def _spec_augment(self, spec, num_mask=2, freq_masking_max=15, time_masking_max=20):
+        # spec shape: (1, 128, 128)
+        c, h, w = spec.shape
+        augmented = spec.clone()
+        
+        # Mask with the minimum value (silence representation in log-mel spectrogram)
+        mask_val = spec.min().item()
+        
+        for _ in range(num_mask):
+            # Frequency masking
+            f = random.randint(0, freq_masking_max)
+            f0 = random.randint(0, h - f)
+            augmented[:, f0:f0+f, :] = mask_val
+            
+            # Time masking
+            t = random.randint(0, time_masking_max)
+            t0 = random.randint(0, w - t)
+            augmented[:, :, t0:t0+t] = mask_val
+            
+        return augmented
+
+# Define Residual Block for CNN
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = self.relu(out)
+        return out
+
+# Define Lightweight 2D CNN with Residual Connections
 class EmotionCNN(nn.Module):
     def __init__(self, num_classes):
         super(EmotionCNN, self).__init__()
         
-        # Conv block 1: Input (1, 128, 128) -> Output (16, 64, 64)
-        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(16)
+        # Initial Conv block: Input (1, 128, 128) -> Output (32, 64, 64)
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(32)
         self.relu1 = nn.ReLU()
         self.pool1 = nn.MaxPool2d(2, 2)
         
-        # Conv block 2: Input (16, 64, 64) -> Output (32, 32, 32)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(32)
-        self.relu2 = nn.ReLU()
-        self.pool2 = nn.MaxPool2d(2, 2)
+        # Residual Blocks
+        self.res1 = ResidualBlock(32, 32)
+        self.pool2 = nn.MaxPool2d(2, 2) # -> (32, 32, 32)
         
-        # Conv block 3: Input (32, 32, 32) -> Output (64, 16, 16)
-        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(64)
-        self.relu3 = nn.ReLU()
-        self.pool3 = nn.MaxPool2d(2, 2)
+        self.res2 = ResidualBlock(32, 64)
+        self.pool3 = nn.MaxPool2d(2, 2) # -> (64, 16, 16)
         
-        # Conv block 4: Input (64, 16, 16) -> Output (128, 8, 8)
-        self.conv4 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.bn4 = nn.BatchNorm2d(128)
-        self.relu4 = nn.ReLU()
-        self.pool4 = nn.MaxPool2d(2, 2)
+        self.res3 = ResidualBlock(64, 128)
+        self.pool4 = nn.MaxPool2d(2, 2) # -> (128, 8, 8)
         
-        # Fully Connected layers
-        # Flattened features: 128 channels * 8 height * 8 width = 8192
-        self.fc1 = nn.Linear(128 * 8 * 8, 256)
-        self.dropout1 = nn.Dropout(0.4)
-        self.fc2 = nn.Linear(256, 64)
-        self.dropout2 = nn.Dropout(0.2)
-        self.fc3 = nn.Linear(64, num_classes)
+        self.res4 = ResidualBlock(128, 256)
+        
+        # Global Average Pooling: (256, 8, 8) -> (256, 1, 1)
+        self.gap = nn.AdaptiveAvgPool2d((1, 1))
+        
+        # Fully Connected Classifier
+        self.fc1 = nn.Linear(256, 64)
+        self.dropout = nn.Dropout(0.3)
+        self.fc2 = nn.Linear(64, num_classes)
 
     def forward(self, x):
         x = self.pool1(self.relu1(self.bn1(self.conv1(x))))
-        x = self.pool2(self.relu2(self.bn2(self.conv2(x))))
-        x = self.pool3(self.relu3(self.bn3(self.conv3(x))))
-        x = self.pool4(self.relu4(self.bn4(self.conv4(x))))
+        x = self.pool2(self.res1(x))
+        x = self.pool3(self.res2(x))
+        x = self.pool4(self.res3(x))
+        x = self.res4(x)
         
-        # Flatten
+        # Global Average Pooling & Flatten
+        x = self.gap(x)
         x = x.view(x.size(0), -1)
         
-        x = self.dropout1(torch.relu(self.fc1(x)))
-        x = self.dropout2(torch.relu(self.fc2(x)))
-        x = self.fc3(x)
+        x = self.dropout(torch.relu(self.fc1(x)))
+        x = self.fc2(x)
         return x
 
 def train():
@@ -113,25 +159,28 @@ def train():
     )
 
     # Create PyTorch datasets & dataloaders
-    train_dataset = SpectrogramDataset(X_train, y_train)
-    val_dataset = SpectrogramDataset(X_val, y_val)
+    train_dataset = SpectrogramDataset(X_train, y_train, augment=True)
+    val_dataset = SpectrogramDataset(X_val, y_val, augment=False)
     
-    # Batch size is set to 64 for moderate memory usage
+    # Batch size of 64
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 
-    # Initialize model, loss, optimizer
+    # Initialize model, loss, optimizer, scheduler
     model = EmotionCNN(num_classes=num_classes).to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    # Training configuration
-    epochs = 15
+    
+    # Label Smoothing regularizes the classifications
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    
+    epochs = 30
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    
     best_val_loss = float('inf')
-    early_stop_patience = 4
+    early_stop_patience = 5
     no_improvement_epochs = 0
 
-    print("Beginning model training...")
+    print("Beginning upgraded ResNet model training...")
     for epoch in range(1, epochs + 1):
         # 1. Train step
         model.train()
@@ -156,6 +205,9 @@ def train():
         epoch_train_loss = train_loss / total_train
         epoch_train_acc = correct_train / total_train
 
+        # Step Learning Rate Scheduler
+        scheduler.step()
+
         # 2. Validation step
         model.eval()
         val_loss = 0.0
@@ -176,7 +228,8 @@ def train():
         epoch_val_loss = val_loss / total_val
         epoch_val_acc = correct_val / total_val
 
-        print(f"Epoch {epoch}/{epochs} | "
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch}/{epochs} | LR: {current_lr:.6f} | "
               f"Train Loss: {epoch_train_loss:.4f} | Train Acc: {epoch_train_acc * 100:.2f}% | "
               f"Val Loss: {epoch_val_loss:.4f} | Val Acc: {epoch_val_acc * 100:.2f}%")
 

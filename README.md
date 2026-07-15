@@ -6,12 +6,12 @@ This repository contains three machine learning pipelines for detecting emotions
 
 ## Model Comparison
 
-| Feature | Pipeline 1: SVM Baseline | Pipeline 2: 2D CNN | Pipeline 3: Hybrid CRNN with Attention (Deeper) |
+| Feature | Pipeline 1: SVM Baseline | Pipeline 2: 2D ResNet (Upgraded) | Pipeline 3: Hybrid CRNN with Attention (Deeper) |
 | :--- | :--- | :--- | :--- |
 | **Input Representation** | 1D Averaged acoustic features (MFCC, Chroma, Mel, Contrast) | 2D Mel-Spectrogram (128 Mel bands x 128 Time frames) | 2D Mel-Spectrogram (128 Mel bands x 128 Time frames) |
 | **Dimensions** | 198-dimensional vector | 128 x 128 matrix | 128 x 128 matrix |
-| **Model Type** | Support Vector Machine (SVM) with RBF kernel | 4-Layer Convolutional Neural Network (CNN) | Conv2D Feature Extractor + Bidirectional LSTM + Self-Attention |
-| **Overall Accuracy** | **78.95%** | **79.39%** | **82.53%** (Best) |
+| **Model Type** | Support Vector Machine (SVM) with RBF kernel | Lightweight 2D Residual CNN with SpecAugment | Conv2D Feature Extractor + Bidirectional LSTM + Self-Attention |
+| **Overall Accuracy** | **78.95%** | **80.19%** | **82.53%** (Best) |
 | **Output Type** | Predicted Emotion | Predicted Emotion | Predicted Emotion + **Attention Timeline** |
 
 ---
@@ -49,7 +49,9 @@ python predict.py --file "path/to/your/audio.wav"
 
 ---
 
-## Pipeline 2: PyTorch 2D CNN
+## Pipeline 2: PyTorch 2D Residual CNN (ResNet)
+
+An upgraded deep learning pipeline utilizing a custom lightweight ResNet-style architecture with modern regularization.
 
 ### 1. Preprocess
 Extract 2D Mel-spectrograms of size 128x128:
@@ -59,10 +61,15 @@ python preprocess_cnn.py
 This generates `extracted_features_cnn.npz`.
 
 ### 2. Train
-Train the 2D CNN network:
+Train the 2D ResNet network:
 ```bash
 python train_cnn.py
 ```
+This pipeline features:
+- **SpecAugment**: On-the-fly random frequency and time masking applied to the spectrograms during training.
+- **Lightweight ResNet**: 4 residual blocks with skip connections and batch normalization, followed by a Global Average Pooling layer.
+- **Advanced Optimization**: Adam optimizer with Cosine Annealing learning rate schedule and Label Smoothing loss (factor=0.1).
+
 This saves the trained weights to `emotion_cnn_model.pth`, scaling params to `normalization_params.joblib`, and class labels to `classes_cnn.joblib`.
 
 ### 3. Predict

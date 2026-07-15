@@ -6,7 +6,7 @@ import joblib
 import torch
 import torch.nn as nn
 import sounddevice as sd
-from scipy.io import wavfile
+from scipy.io import wavfile 
 
 # Paths to models
 MODEL_PATH = "emotion_crnn_model.pth"

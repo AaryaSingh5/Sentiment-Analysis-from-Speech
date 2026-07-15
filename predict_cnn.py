@@ -11,45 +11,74 @@ MODEL_PATH = "emotion_cnn_model.pth"
 NORMALIZATION_PATH = "normalization_params.joblib"
 CLASSES_PATH = "classes_cnn.joblib"
 
-# Define 2D CNN Architecture (Must match training exactly)
+# Define Residual Block for CNN (Must match training exactly)
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = self.relu(out)
+        return out
+
+# Define Lightweight 2D CNN with Residual Connections (Must match training exactly)
 class EmotionCNN(nn.Module):
     def __init__(self, num_classes):
         super(EmotionCNN, self).__init__()
-        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(16)
+        
+        # Initial Conv block: Input (1, 128, 128) -> Output (32, 64, 64)
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(32)
         self.relu1 = nn.ReLU()
         self.pool1 = nn.MaxPool2d(2, 2)
         
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(32)
-        self.relu2 = nn.ReLU()
-        self.pool2 = nn.MaxPool2d(2, 2)
+        # Residual Blocks
+        self.res1 = ResidualBlock(32, 32)
+        self.pool2 = nn.MaxPool2d(2, 2) # -> (32, 32, 32)
         
-        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(64)
-        self.relu3 = nn.ReLU()
-        self.pool3 = nn.MaxPool2d(2, 2)
+        self.res2 = ResidualBlock(32, 64)
+        self.pool3 = nn.MaxPool2d(2, 2) # -> (64, 16, 16)
         
-        self.conv4 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.bn4 = nn.BatchNorm2d(128)
-        self.relu4 = nn.ReLU()
-        self.pool4 = nn.MaxPool2d(2, 2)
+        self.res3 = ResidualBlock(64, 128)
+        self.pool4 = nn.MaxPool2d(2, 2) # -> (128, 8, 8)
         
-        self.fc1 = nn.Linear(128 * 8 * 8, 256)
-        self.dropout1 = nn.Dropout(0.4)
-        self.fc2 = nn.Linear(256, 64)
-        self.dropout2 = nn.Dropout(0.2)
-        self.fc3 = nn.Linear(64, num_classes)
+        self.res4 = ResidualBlock(128, 256)
+        
+        # Global Average Pooling: (256, 8, 8) -> (256, 1, 1)
+        self.gap = nn.AdaptiveAvgPool2d((1, 1))
+        
+        # Fully Connected Classifier
+        self.fc1 = nn.Linear(256, 64)
+        self.dropout = nn.Dropout(0.3)
+        self.fc2 = nn.Linear(64, num_classes)
 
     def forward(self, x):
         x = self.pool1(self.relu1(self.bn1(self.conv1(x))))
-        x = self.pool2(self.relu2(self.bn2(self.conv2(x))))
-        x = self.pool3(self.relu3(self.bn3(self.conv3(x))))
-        x = self.pool4(self.relu4(self.bn4(self.conv4(x))))
+        x = self.pool2(self.res1(x))
+        x = self.pool3(self.res2(x))
+        x = self.pool4(self.res3(x))
+        x = self.res4(x)
+        
+        # Global Average Pooling & Flatten
+        x = self.gap(x)
         x = x.view(x.size(0), -1)
-        x = self.dropout1(torch.relu(self.fc1(x)))
-        x = self.dropout2(torch.relu(self.fc2(x)))
-        x = self.fc3(x)
+        
+        x = self.dropout(torch.relu(self.fc1(x)))
+        x = self.fc2(x)
         return x
 
 def extract_mel_spectrogram(file_path):
